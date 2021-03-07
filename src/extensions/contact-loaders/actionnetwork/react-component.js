@@ -20,6 +20,7 @@ export class CampaignContactsForm extends React.Component {
 
   render() {
     const { clientChoiceData, lastResult } = this.props;
+    let actionNetworkLists = JSON.parse(clientChoiceData);
     let resultMessage = "";
     if (lastResult && lastResult.result) {
       const { message, finalCount } = JSON.parse(lastResult.result);
@@ -27,10 +28,15 @@ export class CampaignContactsForm extends React.Component {
         ? message
         : `Final count was ${finalCount} when you chose ${lastResult.reference}`;
     }
+
     return (
       <GSForm
         schema={yup.object({
-          requestContactCount: yup.number().integer()
+          requestContactCount: yup.number().integer(),
+          listName: yup
+            .string()
+            .oneOf(actionNetworkLists)
+            .required("Please select a list from the dropdown.")
         })}
         onChange={formValues => {
           this.setState({ ...formValues });
@@ -50,18 +56,16 @@ export class CampaignContactsForm extends React.Component {
           type="number"
           label="How many fake contacts"
         />
-        <List>
-          <ListItem
-            primaryText={clientChoiceData}
-            leftIcon={this.props.icons.check}
-          />
-          {resultMessage ? (
-            <ListItem
-              primaryText={resultMessage}
-              leftIcon={this.props.icons.warning}
-            />
-          ) : null}
-        </List>
+        <br />
+        <Form.Field
+          name="listName"
+          type="select"
+          floatingLabelText="Choose a list"
+          choices={actionNetworkLists.map(listName => ({
+            label: listName,
+            value: listName
+          }))}
+        />
 
         <Form.Button
           type="submit"
