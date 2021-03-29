@@ -35,7 +35,7 @@ export class CampaignContactsForm extends React.Component {
           requestContactCount: yup.number().integer(),
           listName: yup
             .string()
-            .oneOf(actionNetworkLists)
+            .oneOf(actionNetworkLists.items.map(list => list.name))
             .required("Please select a list from the dropdown.")
         })}
         onChange={formValues => {
@@ -61,9 +61,10 @@ export class CampaignContactsForm extends React.Component {
           name="listName"
           type="select"
           floatingLabelText="Choose a list"
-          choices={actionNetworkLists.map(listName => ({
-            label: listName,
-            value: listName
+          fullWidth
+          choices={actionNetworkLists.items.map(list => ({
+            label: list.name,
+            value: list.identifier
           }))}
         />
 

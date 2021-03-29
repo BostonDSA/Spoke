@@ -1,8 +1,34 @@
+import util from "util";
 import { completeContactLoad, failedContactLoad } from "../../../workers/jobs";
 import { r } from "../../../server/models";
 import { getConfig, hasConfig } from "../../../server/api/lib/config";
+import httpRequest from "../../../server/lib/http-request.js";
+
+export const setTimeoutPromise = util.promisify(setTimeout);
 
 export const name = "actionnetwork";
+
+export const envVars = Object.freeze({
+  API_KEY: "ACTION_NETWORK_API_KEY",
+  DOMAIN: "ACTION_NETWORK_API_DOMAIN",
+  BASE_URL: "ACTION_NETWORK_API_BASE_URL",
+  CACHE_TTL: "ACTION_NETWORK_ACTION_HANDLER_CACHE_TTL"
+});
+
+export const defaults = Object.freeze({
+  DOMAIN: "https://actionnetwork.org",
+  BASE_URL: "/api/v2",
+  CACHE_TTL: 1800
+});
+
+export const makeUrl = url =>
+  `${getConfig(envVars.DOMAIN) || defaults.DOMAIN}${getConfig(
+    envVars.BASE_URL
+  ) || defaults.BASE_URL}/${url}`;
+
+export const makeAuthHeader = organization => ({
+  "OSDI-API-Token": getConfig(envVars.API_KEY, organization)
+});
 
 export function displayName() {
   return "Action Network";
@@ -44,14 +70,133 @@ export function clientChoiceDataCacheKey(campaign, user) {
   return `${campaign.id}`;
 }
 
+const getPage = async (item, page, organization) => {
+  const url = makeUrl(`${item}?page=${page}`);
+  try {
+    const pageResponse = await httpRequest(url, {
+      method: "GET",
+      headers: {
+        ...makeAuthHeader(organization)
+      }
+    })
+      .then(async response => await response.json())
+      .catch(error => {
+        const message = `Error retrieving ${item} from ActionNetwork ${error}`;
+        console.error(message);
+        throw new Error(message);
+      });
+
+    return {
+      item,
+      page,
+      pageResponse
+    };
+  } catch (caughtError) {
+    console.error(
+      `Error loading ${item} page ${page} from ActionNetwork ${caughtError}`
+    );
+    throw caughtError;
+  }
+};
+
+const extractReceived = (item, responses) => {
+  const toReturn = [];
+  responses[item].forEach(response => {
+    toReturn.push(...((response._embedded || [])[`osdi:${item}`] || []));
+  });
+  return toReturn;
+};
+
 export async function getClientChoiceData(organization, campaign, user) {
   /// data to be sent to the admin client to present options to the component or similar
   /// The react-component will be sent this data as a property
   /// return a json object which will be cached for expiresSeconds long
   /// `data` should be a single string -- it can be JSON which you can parse in the client component
+  const responses = {
+    lists: []
+  };
+  try {
+    const firstPagePromises = [getPage("lists", 1, organization)];
+
+    const [firstListsResponse] = await Promise.all(firstPagePromises);
+
+    responses.lists.push(firstListsResponse.pageResponse);
+
+    const pagesNeeded = {
+      lists: firstListsResponse.pageResponse.total_pages
+    };
+
+    const pageToDo = [];
+
+    Object.entries(pagesNeeded).forEach(([item, pageCount]) => {
+      for (let i = 2; i <= pageCount; ++i) {
+        pageToDo.push([item, i, organization]);
+      }
+    });
+
+    const REQUESTS_PER_SECOND = 4;
+    const WAIT_MILLIS = 1100;
+    let pageToDoStart = 0;
+
+    while (pageToDoStart < pageToDo.length) {
+      if (pageToDo.length > REQUESTS_PER_SECOND - firstPagePromises.length) {
+        await exports.setTimeoutPromise(WAIT_MILLIS);
+      }
+
+      const pageToDoEnd = pageToDoStart + REQUESTS_PER_SECOND;
+      const thisTranche = pageToDo.slice(pageToDoStart, pageToDoEnd);
+
+      const pagePromises = thisTranche.map(thisPageToDo => {
+        return getPage(...thisPageToDo);
+      });
+
+      const pageResponses = await Promise.all(pagePromises);
+
+      pageResponses.forEach(pageResponse => {
+        responses[pageResponse.item].push(pageResponse.pageResponse);
+      });
+      pageToDoStart = pageToDoEnd;
+    }
+  } catch (caughtError) {
+    console.error(`Error loading choices from ActionNetwork ${caughtError}`);
+    return {
+      data: `${JSON.stringify({
+        error: "Failed to load choices from ActionNetwork"
+      })}`
+    };
+  }
+
+  const receivedLists = [...extractReceived("lists", responses)];
+
+  const identifierRegex = /action_network:(.*)/;
+  const toReturn = [];
+
+  receivedLists.forEach(list => {
+    let identifier;
+
+    (list.identifiers || []).some(identifierCandidate => {
+      const regexMatch = identifierRegex.exec(identifierCandidate);
+      if (regexMatch) {
+        identifier = regexMatch[1];
+        return true;
+      }
+      return false;
+    });
+
+    if (!identifier || !list.name) {
+      return;
+    }
+
+    toReturn.push({
+      name: `${list.name || list.title}`,
+      identifier: `${identifier}`
+    });
+  });
+
   return {
-    data: `["list A", "list B"]`,
-    expiresSeconds: 0
+    data: `${JSON.stringify({ items: toReturn })}`,
+    expiresSeconds:
+      Number(getConfig(envVars.CACHE_TTL, organization)) || defaults.CACHE_TTL
   };
 }
 
