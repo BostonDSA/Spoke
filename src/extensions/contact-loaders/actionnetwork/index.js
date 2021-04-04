@@ -107,24 +107,22 @@ const extractReceived = (item, responses) => {
   return toReturn;
 };
 
-export async function getClientChoiceData(organization, campaign, user) {
-  /// data to be sent to the admin client to present options to the component or similar
-  /// The react-component will be sent this data as a property
-  /// return a json object which will be cached for expiresSeconds long
-  /// `data` should be a single string -- it can be JSON which you can parse in the client component
-  const responses = {
-    lists: []
-  };
+export async function getActionNetworkPages(
+  organization,
+  endpoint,
+  extractKey
+) {
+  let responses = {};
+  responses[extractKey] = [];
   try {
-    const firstPagePromises = [getPage("lists", 1, organization)];
+    const firstPagePromises = [getPage(endpoint, 1, organization)];
 
-    const [firstListsResponse] = await Promise.all(firstPagePromises);
+    const [firstThingsResponse] = await Promise.all(firstPagePromises);
 
-    responses.lists.push(firstListsResponse.pageResponse);
+    responses[extractKey].push(firstThingsResponse.pageResponse);
 
-    const pagesNeeded = {
-      lists: firstListsResponse.pageResponse.total_pages
-    };
+    let pagesNeeded = {};
+    pagesNeeded[extractKey] = firstThingsResponse.pageResponse.total_pages;
 
     const pageToDo = [];
 
@@ -159,22 +157,18 @@ export async function getClientChoiceData(organization, campaign, user) {
     }
   } catch (caughtError) {
     console.error(`Error loading choices from ActionNetwork ${caughtError}`);
-    return {
-      data: `${JSON.stringify({
-        error: "Failed to load choices from ActionNetwork"
-      })}`
-    };
+    throw caughtError;
   }
 
-  const receivedLists = [...extractReceived("lists", responses)];
+  const receivedThings = [...extractReceived(extractKey, responses)];
 
   const identifierRegex = /action_network:(.*)/;
   const toReturn = [];
 
-  receivedLists.forEach(list => {
+  receivedThings.forEach(thing => {
     let identifier;
 
-    (list.identifiers || []).some(identifierCandidate => {
+    (thing.identifiers || []).some(identifierCandidate => {
       const regexMatch = identifierRegex.exec(identifierCandidate);
       if (regexMatch) {
         identifier = regexMatch[1];
@@ -183,21 +177,42 @@ export async function getClientChoiceData(organization, campaign, user) {
       return false;
     });
 
-    if (!identifier || !list.name) {
+    if (!identifier || !thing.name) {
       return;
     }
 
     toReturn.push({
-      name: `${list.name || list.title}`,
+      name: `${thing.name || thing.title}`,
       identifier: `${identifier}`
     });
   });
 
-  return {
-    data: `${JSON.stringify({ items: toReturn })}`,
-    expiresSeconds:
-      Number(getConfig(envVars.CACHE_TTL, organization)) || defaults.CACHE_TTL
-  };
+  return toReturn;
+}
+
+export async function getClientChoiceData(organization, campaign, user) {
+  /// data to be sent to the admin client to present options to the component or similar
+  /// The react-component will be sent this data as a property
+  /// return a json object which will be cached for expiresSeconds long
+  /// `data` should be a single string -- it can be JSON which you can parse in the client component
+  try {
+    const toReturn = await getActionNetworkPages(
+      organization,
+      "lists",
+      "lists"
+    );
+    return {
+      data: `${JSON.stringify({ items: toReturn })}`,
+      expiresSeconds:
+        Number(getConfig(envVars.CACHE_TTL, organization)) || defaults.CACHE_TTL
+    };
+  } catch (caughtError) {
+    return {
+      data: `${JSON.stringify({
+        error: "Failed to load choices from ActionNetwork"
+      })}`
+    };
+  }
 }
 
 export async function processContactLoad(job, maxContacts, organization) {
