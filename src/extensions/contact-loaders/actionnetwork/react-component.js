@@ -33,9 +33,9 @@ export class CampaignContactsForm extends React.Component {
       <GSForm
         schema={yup.object({
           requestContactCount: yup.number().integer(),
-          listName: yup
+          listIdentifier: yup
             .string()
-            .oneOf(actionNetworkLists.items.map(list => list.name))
+            .oneOf(actionNetworkLists.items.map(list => list.identifier))
             .required("Please select a list from the dropdown.")
         })}
         onChange={formValues => {
@@ -58,7 +58,7 @@ export class CampaignContactsForm extends React.Component {
         />
         <br />
         <Form.Field
-          name="listName"
+          name="listIdentifier"
           type="select"
           floatingLabelText="Choose a list"
           fullWidth

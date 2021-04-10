@@ -72,6 +72,7 @@ export function clientChoiceDataCacheKey(campaign, user) {
 
 const getPage = async (item, page, organization) => {
   const url = makeUrl(`${item}?page=${page}`);
+  console.log(`HTTP GET ${url}`);
   try {
     const pageResponse = await httpRequest(url, {
       method: "GET",
@@ -86,6 +87,9 @@ const getPage = async (item, page, organization) => {
         throw new Error(message);
       });
 
+    if (item != "lists") {
+      console.log(`HTTP response: ${JSON.stringify(pageResponse)}`);
+    }
     return {
       item,
       page,
@@ -122,7 +126,7 @@ export async function getActionNetworkPages(
     responses[extractKey].push(firstThingsResponse.pageResponse);
 
     let pagesNeeded = {};
-    pagesNeeded[extractKey] = firstThingsResponse.pageResponse.total_pages;
+    pagesNeeded[endpoint] = firstThingsResponse.pageResponse.total_pages;
 
     const pageToDo = [];
 
@@ -160,12 +164,14 @@ export async function getActionNetworkPages(
     throw caughtError;
   }
 
-  const receivedThings = [...extractReceived(extractKey, responses)];
+  return [...extractReceived(extractKey, responses)];
+}
 
-  const identifierRegex = /action_network:(.*)/;
+export async function getContactLists(organization) {
   const toReturn = [];
-
-  receivedThings.forEach(thing => {
+  const fetched = await getActionNetworkPages(organization, "lists", "lists");
+  const identifierRegex = /action_network:(.*)/;
+  fetched.forEach(thing => {
     let identifier;
 
     (thing.identifiers || []).some(identifierCandidate => {
@@ -186,7 +192,6 @@ export async function getActionNetworkPages(
       identifier: `${identifier}`
     });
   });
-
   return toReturn;
 }
 
@@ -196,11 +201,7 @@ export async function getClientChoiceData(organization, campaign, user) {
   /// return a json object which will be cached for expiresSeconds long
   /// `data` should be a single string -- it can be JSON which you can parse in the client component
   try {
-    const toReturn = await getActionNetworkPages(
-      organization,
-      "lists",
-      "lists"
-    );
+    const toReturn = await getContactLists(organization);
     return {
       data: `${JSON.stringify({ items: toReturn })}`,
       expiresSeconds:
@@ -252,6 +253,12 @@ export async function processContactLoad(job, maxContacts, organization) {
     .delete();
 
   const contactData = JSON.parse(job.payload);
+  let actionNetworkContacts = await getActionNetworkPages(
+    organization,
+    `lists/${contactData.listIdentifier}/items`,
+    "items"
+  );
+  console.log(`AN contacts: ${JSON.stringify(actionNetworkContacts)}`);
   if (contactData.requestContactCount === 42) {
     await failedContactLoad(
       job,
