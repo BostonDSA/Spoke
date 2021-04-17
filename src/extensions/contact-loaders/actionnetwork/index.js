@@ -1,5 +1,9 @@
 import util from "util";
-import { completeContactLoad, failedContactLoad } from "../../../workers/jobs";
+import {
+  completeContactLoad,
+  failedContactLoad,
+  getTimezoneByZip
+} from "../../../workers/jobs";
 import { r } from "../../../server/models";
 import { getConfig, hasConfig } from "../../../server/api/lib/config";
 import httpRequest from "../../../server/lib/http-request.js";
@@ -87,9 +91,6 @@ const getPage = async (item, page, organization) => {
         throw new Error(message);
       });
 
-    if (item != "lists") {
-      console.log(`HTTP response: ${JSON.stringify(pageResponse)}`);
-    }
     return {
       item,
       page,
@@ -195,6 +196,75 @@ export async function getContactLists(organization) {
   return toReturn;
 }
 
+export async function getPerson(organization, identifier) {
+  const url = makeUrl(`people/${identifier}`);
+  console.log(`HTTP GET ${url}`);
+  try {
+    const response = await httpRequest(url, {
+      method: "GET",
+      headers: {
+        ...makeAuthHeader(organization)
+      }
+    })
+      .then(async response => await response.json())
+      .catch(error => {
+        const message = `Error retrieving person from ActionNetwork ${error}`;
+        console.error(message);
+        throw new Error(message);
+      });
+    return response;
+  } catch (caughtError) {
+    console.error(`Error loading person from ActionNetwork ${caughtError}`);
+    throw caughtError;
+  }
+}
+
+function makeContact(person, campaignId) {
+  if (!("Phone" in person.custom_fields)) {
+    throw new Error("Contact missing Phone field");
+  }
+  // TODO: Use primary address instead of first?
+  // Maybe use Boston zip code by default? It's only used for timezone information.
+  if (person.postal_addresses.length == 0) {
+    throw new Error("Contact missing postal address");
+  }
+  return {
+    first_name: `${person.given_name}`,
+    last_name: `${person.family_name}`,
+    cell: `+1${person.custom_fields.Phone}`,
+    zip: person.postal_addresses[0].postal_code,
+    timezone_offset: getTimezoneByZip(person.postal_addresses[0].postal_code),
+    message_status: "needsMessage",
+    campaign_id: campaignId
+  };
+}
+
+export async function getContactsFromList(
+  organization,
+  campaignId,
+  listIdentifier
+) {
+  const items = await getActionNetworkPages(
+    organization,
+    `lists/${listIdentifier}/items`,
+    "items"
+  );
+  let people = [];
+  for (const item of items) {
+    if ("action_network:person_id" in item) {
+      try {
+        const person = await getPerson(
+          organization,
+          item["action_network:person_id"]
+        );
+        people.push(makeContact(person, campaignId));
+      } catch (caughtError) {}
+    }
+  }
+
+  return people;
+}
+
 export async function getClientChoiceData(organization, campaign, user) {
   /// data to be sent to the admin client to present options to the component or similar
   /// The react-component will be sent this data as a property
@@ -253,76 +323,20 @@ export async function processContactLoad(job, maxContacts, organization) {
     .delete();
 
   const contactData = JSON.parse(job.payload);
-  let actionNetworkContacts = await getActionNetworkPages(
+  // TODO: Enforce maxContacts.
+  let actionNetworkContacts = await getContactsFromList(
     organization,
-    `lists/${contactData.listIdentifier}/items`,
-    "items"
+    campaignId,
+    contactData.listIdentifier
   );
-  console.log(`AN contacts: ${JSON.stringify(actionNetworkContacts)}`);
-  if (contactData.requestContactCount === 42) {
-    await failedContactLoad(
-      job,
-      null,
-      // a reference so you can persist user choices
-      // This will be lastResult.reference in react-component property
-      String(contactData.requestContactCount),
-      // a place where you can save result messages based on the outcome
-      // This will be lastResult.result in react-component property
-      JSON.stringify({
-        message:
-          "42 is life, the universe everything. Please choose a different number."
-      })
-    );
-    return; // bail early
-  }
-  const areaCodes = ["213", "323", "212", "718", "646", "661"];
-  // FUTURE -- maybe based on campaign default use 'surrounding' offsets
-  const timezones = [
-    "-12_1",
-    "-11_0",
-    "-5_1",
-    "-4_1",
-    "0_0",
-    "5_0",
-    "10_0",
-    ""
-  ];
-  const contactCount = Math.min(
-    contactData.requestContactCount || 0,
-    maxContacts ? maxContacts : areaCodes.length * 100,
-    areaCodes.length * 100
-  );
-  function genCustomFields(i, campaignId) {
-    return JSON.stringify({
-      campaignIndex: String(i),
-      [`custom${campaignId}`]: String(Math.random()).slice(3, 8)
-    });
-  }
-  const newContacts = [];
-  for (let i = 0; i < contactCount; i++) {
-    const ac = areaCodes[parseInt(i / 100, 10)];
-    const suffix = String("00" + (i % 100)).slice(-2);
-    newContacts.push({
-      first_name: `Foo${i}`,
-      last_name: `Bar${i}`,
-      // conform to Hollywood-reserved numbers
-      // https://www.businessinsider.com/555-phone-number-tv-movies-telephone-exchange-names-ghostbusters-2018-3
-      cell: `+1${ac}555${suffix}`,
-      zip: "10011",
-      custom_fields: genCustomFields(i, campaignId),
-      timezone_offset:
-        timezones[parseInt(Math.random() * timezones.length, 10)],
-      message_status: "needsMessage",
-      campaign_id: campaignId
-    });
-  }
-  await r.knex.batchInsert("campaign_contact", newContacts, 100);
+
+  await r.knex.batchInsert("campaign_contact", actionNetworkContacts, 100);
 
   await completeContactLoad(
     job,
     null,
     // see failedContactLoad above for descriptions
     String(contactData.requestContactCount),
-    JSON.stringify({ finalCount: contactCount })
+    JSON.stringify({ finalCount: actionNetworkContacts.length })
   );
 }
