@@ -12,25 +12,25 @@ export const setTimeoutPromise = util.promisify(setTimeout);
 
 export const name = "actionnetwork";
 
-export const envVars = Object.freeze({
+const envVars = Object.freeze({
   API_KEY: "ACTION_NETWORK_API_KEY",
   DOMAIN: "ACTION_NETWORK_API_DOMAIN",
   BASE_URL: "ACTION_NETWORK_API_BASE_URL",
   CACHE_TTL: "ACTION_NETWORK_ACTION_HANDLER_CACHE_TTL"
 });
 
-export const defaults = Object.freeze({
+const defaults = Object.freeze({
   DOMAIN: "https://actionnetwork.org",
   BASE_URL: "/api/v2",
   CACHE_TTL: 1800
 });
 
-export const makeUrl = url =>
+const makeUrl = url =>
   `${getConfig(envVars.DOMAIN) || defaults.DOMAIN}${getConfig(
     envVars.BASE_URL
   ) || defaults.BASE_URL}/${url}`;
 
-export const makeAuthHeader = organization => ({
+const makeAuthHeader = organization => ({
   "OSDI-API-Token": getConfig(envVars.API_KEY, organization)
 });
 
@@ -74,7 +74,13 @@ export function clientChoiceDataCacheKey(campaign, user) {
   return `${campaign.id}`;
 }
 
-const getPage = async (item, page, organization) => {
+// Makes a GET request for a single page from the ActionNetwork API.
+// Args:
+//   item: The resource name (e.g. "lists").
+//   page: The page number.
+//   organization: Spoke organization name.
+//
+const getActionNetworkPage = async (item, page, organization) => {
   const url = makeUrl(`${item}?page=${page}`);
   console.log(`HTTP GET ${url}`);
   try {
@@ -104,6 +110,7 @@ const getPage = async (item, page, organization) => {
   }
 };
 
+// Extracts/aggregates a specific resource type from the given responses.
 const extractReceived = (item, responses) => {
   const toReturn = [];
   responses[item].forEach(response => {
@@ -112,15 +119,21 @@ const extractReceived = (item, responses) => {
   return toReturn;
 };
 
-export async function getActionNetworkPages(
-  organization,
-  endpoint,
-  extractKey
-) {
+// Fetches all available pages for the given resource from the ActionNetwork API.
+//
+// Args:
+//   organization: Spoke organization name.
+//   endpoint: REST endpoint.
+//   extractKey: Item type to extract from the responses.
+//
+// Returns:
+//  Array of items aggregated from responses.
+//
+async function getActionNetworkPages(organization, endpoint, extractKey) {
   let responses = {};
   responses[extractKey] = [];
   try {
-    const firstPagePromises = [getPage(endpoint, 1, organization)];
+    const firstPagePromises = [getActionNetworkPage(endpoint, 1, organization)];
 
     const [firstThingsResponse] = await Promise.all(firstPagePromises);
 
@@ -150,7 +163,7 @@ export async function getActionNetworkPages(
       const thisTranche = pageToDo.slice(pageToDoStart, pageToDoEnd);
 
       const pagePromises = thisTranche.map(thisPageToDo => {
-        return getPage(...thisPageToDo);
+        return getActionNetworkPage(...thisPageToDo);
       });
 
       const pageResponses = await Promise.all(pagePromises);
@@ -168,7 +181,12 @@ export async function getActionNetworkPages(
   return [...extractReceived(extractKey, responses)];
 }
 
-export async function getContactLists(organization) {
+// Fetches the list of contact lists from ActionNetwork.
+//
+// Returns:
+//   A list of Objects {name: <display name string>, identifier: <actionnetwork item ID>}.
+//
+async function getContactLists(organization) {
   const toReturn = [];
   const fetched = await getActionNetworkPages(organization, "lists", "lists");
   const identifierRegex = /action_network:(.*)/;
@@ -193,10 +211,21 @@ export async function getContactLists(organization) {
       identifier: `${identifier}`
     });
   });
-  return toReturn;
+  return toReturn.sort((a, b) => {
+    return ("" + a.name).localeCompare(b.name);
+  });
 }
 
-export async function getPerson(organization, identifier) {
+// Gets a specific person resource from ActionNetwork.
+//
+// Args:
+//   organization: Spoke organization name.
+//   identifier: ActionNetwork resource ID of the person.
+//
+// Returns:
+//   Person resource if found.
+//
+async function getPerson(organization, identifier) {
   const url = makeUrl(`people/${identifier}`);
   console.log(`HTTP GET ${url}`);
   try {
@@ -219,31 +248,41 @@ export async function getPerson(organization, identifier) {
   }
 }
 
+// Converts an ActionNetwork Person object into a
+// Spoke contact.
 function makeContact(person, campaignId) {
   if (!("Phone" in person.custom_fields)) {
     throw new Error("Contact missing Phone field");
   }
-  // TODO: Use primary address instead of first?
-  // Maybe use Boston zip code by default? It's only used for timezone information.
-  if (person.postal_addresses.length == 0) {
-    throw new Error("Contact missing postal address");
+  // Boston zip code is default (only used for timezone info).
+  postalCode = "02118";
+  for (address of person.postal_addresses) {
+    if (address.primary) {
+      postalCode = address.postal_code;
+    }
   }
   return {
     first_name: `${person.given_name}`,
     last_name: `${person.family_name}`,
     cell: `+1${person.custom_fields.Phone}`,
-    zip: person.postal_addresses[0].postal_code,
-    timezone_offset: getTimezoneByZip(person.postal_addresses[0].postal_code),
+    zip: postalCode,
+    timezone_offset: getTimezoneByZip(postalCode),
     message_status: "needsMessage",
     campaign_id: campaignId
   };
 }
 
-export async function getContactsFromList(
-  organization,
-  campaignId,
-  listIdentifier
-) {
+// Creates a list of Spoke contacts from an ActionNetwork list.
+//
+// Args:
+//   organization: Spoke organization name.
+//   campaignId: Spoke campaign ID.
+//   listIdentifier: ActionNetwork resource ID for the list.
+//
+// Returns:
+//   An array of Spoke contacts.
+//
+async function getContactsFromList(organization, campaignId, listIdentifier) {
   const items = await getActionNetworkPages(
     organization,
     `lists/${listIdentifier}/items`,
