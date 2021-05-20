@@ -54,7 +54,8 @@ export class CampaignContactsForm extends React.Component {
         <Form.Field
           name="requestContactCount"
           type="number"
-          label="How many fake contacts"
+          label="Max # of Contacts (100)"
+          initialValue={100}
         />
         <br />
         <Form.Field

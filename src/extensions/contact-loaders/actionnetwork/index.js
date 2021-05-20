@@ -16,7 +16,7 @@ const envVars = Object.freeze({
   API_KEY: "ACTION_NETWORK_API_KEY",
   DOMAIN: "ACTION_NETWORK_API_DOMAIN",
   BASE_URL: "ACTION_NETWORK_API_BASE_URL",
-  CACHE_TTL: "ACTION_NETWORK_ACTION_HANDLER_CACHE_TTL"
+  CACHE_TTL: "ACTION_NETWORK_CONTACT_LOADER_CACHE_TTL"
 });
 
 const defaults = Object.freeze({
@@ -129,7 +129,12 @@ const extractReceived = (item, responses) => {
 // Returns:
 //  Array of items aggregated from responses.
 //
-async function getActionNetworkPages(organization, endpoint, extractKey) {
+async function getActionNetworkPages(
+  organization,
+  endpoint,
+  extractKey,
+  maxItems = -1
+) {
   let responses = {};
   responses[extractKey] = [];
   try {
@@ -140,7 +145,15 @@ async function getActionNetworkPages(organization, endpoint, extractKey) {
     responses[extractKey].push(firstThingsResponse.pageResponse);
 
     let pagesNeeded = {};
-    pagesNeeded[endpoint] = firstThingsResponse.pageResponse.total_pages;
+    if (maxItems > 0) {
+      pagesNeeded[endpoint] = Math.min(
+        firstThingsResponse.pageResponse.total_pages,
+        Math.max(1, maxItems / firstThingsResponse.pageResponse.per_page)
+      );
+      console.log(`pagesNeeded = ${pagesNeeded[endpoint]}`);
+    } else {
+      pagesNeeded[endpoint] = firstThingsResponse.pageResponse.total_pages;
+    }
 
     const pageToDo = [];
 
@@ -255,8 +268,8 @@ function makeContact(person, campaignId) {
     throw new Error("Contact missing Phone field");
   }
   // Boston zip code is default (only used for timezone info).
-  postalCode = "02118";
-  for (address of person.postal_addresses) {
+  let postalCode = "02118";
+  for (const address of person.postal_addresses) {
     if (address.primary) {
       postalCode = address.postal_code;
     }
@@ -282,22 +295,31 @@ function makeContact(person, campaignId) {
 // Returns:
 //   An array of Spoke contacts.
 //
-async function getContactsFromList(organization, campaignId, listIdentifier) {
+async function getContactsFromList(
+  organization,
+  campaignId,
+  listIdentifier,
+  maxContacts
+) {
   const items = await getActionNetworkPages(
     organization,
     `lists/${listIdentifier}/items`,
-    "items"
+    "items",
+    maxContacts
   );
   let people = [];
   for (const item of items) {
     if ("action_network:person_id" in item) {
       try {
+        console.log("found person_id");
         const person = await getPerson(
           organization,
           item["action_network:person_id"]
         );
         people.push(makeContact(person, campaignId));
-      } catch (caughtError) {}
+      } catch (caughtError) {
+        console.log(`person error: ${caughtError}`);
+      }
     }
   }
 
@@ -366,8 +388,11 @@ export async function processContactLoad(job, maxContacts, organization) {
   let actionNetworkContacts = await getContactsFromList(
     organization,
     campaignId,
-    contactData.listIdentifier
+    contactData.listIdentifier,
+    maxContacts
   );
+
+  console.log(`num contacts: ${actionNetworkContacts.length}`);
 
   await r.knex.batchInsert("campaign_contact", actionNetworkContacts, 100);
 
